@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+asyncpg
+greenlet
+chromadb
+google-genai
+line-bot-sdk
+pydantic-settings
+apscheduler
+httpx
