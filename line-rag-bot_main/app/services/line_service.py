@@ -40,9 +40,11 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
         group_id = event.source.group_id if hasattr(event.source, 'group_id') else getattr(event.source, 'room_id', event.source.user_id)
         user_id = event.source.user_id
         text = event.message.text
-        # Normally would need to fetch user profile, but caching or simplified processing
-        # Let's just use user_id as user_name for now, or assume Line bot can get profile
-        user_name = f"User_{user_id[-4:]}" # simplifying to avoid extra API call block
+        
+        # Log the request for visibility
+        print(f"\n[Incoming Message] Group: {group_id} | User: {user_id} | Text: {text}")
+
+        user_name = f"User_{user_id[-4:]}"
         timestamp = datetime.utcfromtimestamp(event.timestamp / 1000.0)
 
         # 1. URL Detection

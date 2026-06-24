@@ -66,7 +66,7 @@ async def summarize_and_store(group_id: str, messages: list, participants: list,
         return
         
     try:
-        embedding_model = 'models/text-embedding-004'
+        embedding_model = 'models/gemini-embedding-001'
         embeddings = []
         for chunk in chunks:
             res = genai.embed_content(
@@ -94,7 +94,8 @@ async def summarize_and_store(group_id: str, messages: list, participants: list,
 async def process_rag_query(group_id: str, query: str, reply_token: str):
     from app.services.line_service import send_reply
     try:
-        embedding_model = 'models/text-embedding-004'
+        # Using a model that is widely available in v1beta
+        embedding_model = 'models/gemini-embedding-001' # Updated to gemini-embedding-001
         res = genai.embed_content(
             model=embedding_model,
             content=query,
@@ -104,6 +105,7 @@ async def process_rag_query(group_id: str, query: str, reply_token: str):
         
         results = query_vectors(group_id, query_embedding)
         
+        # Check if results exist and models support (fixing 404 for text-embedding-004 if needed)
         if not results['documents'] or not results['documents'][0]:
             await send_reply(reply_token, "Sorry, I cannot find relevant information from the current group logs and links.")
             return

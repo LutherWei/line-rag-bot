@@ -47,7 +47,7 @@ async def process_url(group_id: str, url: str):
     chunks = chunk_text(raw_content)
     if chunks:
         try:
-            embedding_model = 'models/text-embedding-004'
+            embedding_model = 'models/gemini-embedding-001'
             embeddings = []
             for chunk in chunks:
                 res = genai.embed_content(
