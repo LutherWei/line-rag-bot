@@ -4,6 +4,7 @@ from app.config import settings
 from app.services.vector_service import store_vectors, query_vectors
 import uuid
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -108,32 +109,52 @@ async def summarize_and_store(group_id: str, messages: list, participants: list,
 
 async def process_rag_query(group_id: str, query: str, user_id: str):
     from app.services.line_service import send_push_message
-    import os
     
     try:
-        # Read the real-time TXT file
-        data_dir = "data"
-        file_path = os.path.join(data_dir, f"group_{group_id}.txt")
+        # 1. Generate query embedding
+        res = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=query,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_QUERY"
+            )
+        )
+        query_embedding = res.embeddings[0].values
         
-        chat_logs = ""
-        if os.path.exists(file_path):
-            with open(file_path, "r", encoding="utf-8") as f:
-                chat_logs += f.read()
-                
-        # Also include the historical file if it exists
-        historical_file = "[LINE]2026 台大擊劍隊暑假社遊.txt"
-        if os.path.exists(historical_file):
-            with open(historical_file, "r", encoding="utf-8") as f:
-                chat_logs += "\n\n--- 歷史對話 (社遊記事本) ---\n"
-                chat_logs += f.read()
+        # 2. Query vectors from ChromaDB (Top-10)
+        results = query_vectors(group_id, query_embedding, top_k=10)
         
-        if not chat_logs.strip():
-            logger.info(f"No chat logs found for group: {group_id}")
-            await send_push_message(user_id, "目前沒有任何群組對話紀錄。")
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        
+        if not documents:
+            logger.info(f"No vector database matches found for query in group: {group_id}")
+            await send_push_message(user_id, "Sorry, I cannot find relevant information from the current group logs and links.")
             return
 
-        # Prepare the context
-        context_str = f"[群組對話紀錄]\n{chat_logs}"
+        # 3. Format reference context
+        context_parts = []
+        for i, (doc, meta) in enumerate(zip(documents, metadatas), start=1):
+            doc_type = meta.get("doc_type", "unknown")
+            timestamp = meta.get("timestamp", "unknown")
+            source_info = meta.get("source_info", "unknown")
+            
+            if doc_type == "chat_summary":
+                source_line = f"📌 Source {i}: {timestamp} Group Chat Summary (Participants: {source_info})"
+            elif doc_type == "external_url":
+                source_line = f"🔗 Source {i}: External Link ({source_info})"
+            elif doc_type == "chat_message":
+                source_line = f"💬 Source {i}: {timestamp} Group Chat Message (Sender: {source_info})"
+            elif doc_type == "historical_chat":
+                source_line = f"📜 Source {i}: {timestamp} Historical Outing Chat ({source_info})"
+            else:
+                source_line = f"📄 Source {i}: {timestamp} ({source_info})"
+                
+            context_parts.append(f"[{source_line}]\n{doc}\n")
+            
+        context_str = "\n".join(context_parts)
+        
+        # 4. Fill prompt and generate response
         prompt = RAG_PROMPT.replace("{Context_with_Metadata_and_Source_Numbers}", context_str)
         
         response = client.models.generate_content(
@@ -143,7 +164,39 @@ async def process_rag_query(group_id: str, query: str, user_id: str):
         
         await send_push_message(user_id, response.text)
     except Exception as e:
-        logger.error(f"Error in TXT RAG query: {e}")
+        logger.error(f"Error in ChromaDB RAG query: {e}")
         await send_push_message(user_id, "Error processing your request.")
+
+
+async def vectorize_and_store_message(group_id: str, user_name: str, text: str, timestamp: datetime) -> bool:
+    if not text.strip():
+        return False
+    
+    try:
+        res = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_DOCUMENT"
+            )
+        )
+        embedding = res.embeddings[0].values
+        
+        metadata = {
+            "group_id": group_id,
+            "doc_type": "chat_message",
+            "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "source_info": user_name
+        }
+        
+        doc_id = str(uuid.uuid4())
+        
+        store_vectors([text], [metadata], [embedding], [doc_id])
+        logger.info(f"Successfully vectorized and stored real-time message for group {group_id} from {user_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Error vectorizing real-time message: {e}")
+        return False
+
 
 

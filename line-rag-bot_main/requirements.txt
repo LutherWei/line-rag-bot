@@ -10,3 +10,4 @@ pydantic-settings
 apscheduler
 httpx
 google-generativeai
+pyngrok

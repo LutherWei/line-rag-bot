@@ -18,8 +18,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 configuration = Configuration(access_token=settings.line_channel_access_token)
-async_api_client = AsyncApiClient(configuration)
-messaging_api = AsyncMessagingApi(async_api_client)
+_async_api_client = None
+_messaging_api = None
+
+def get_messaging_api() -> AsyncMessagingApi:
+    global _async_api_client, _messaging_api
+    if _messaging_api is None:
+        _async_api_client = AsyncApiClient(configuration)
+        _messaging_api = AsyncMessagingApi(_async_api_client)
+    return _messaging_api
+
 parser = WebhookParser(settings.line_channel_secret)
 
 URL_REGEX = re.compile(r'(https?://[^\s]+)')
@@ -90,7 +98,8 @@ async def _handle_group_message(event, text: str, background_tasks: BackgroundTa
     user_name = f"User_{user_id[-4:]}" if user_id else "Unknown"
     if user_id:
         try:
-            profile = await messaging_api.get_group_member_profile(group_id, user_id)
+            api = get_messaging_api()
+            profile = await api.get_group_member_profile(group_id, user_id)
             if profile and profile.display_name:
                 user_name = profile.display_name
         except Exception as e:
@@ -114,6 +123,10 @@ async def _handle_group_message(event, text: str, background_tasks: BackgroundTa
         )
         session.add(msg)
         await session.commit()
+
+    # 2b. Vectorize message in real-time in background
+    from app.services.llm_service import vectorize_and_store_message
+    background_tasks.add_task(vectorize_and_store_message, group_id, user_name, text, timestamp)
     
     # 3. Append to local TXT file for real-time RAG context
     data_dir = "data"
@@ -168,7 +181,8 @@ async def _handle_friend_message(event, text: str, background_tasks: BackgroundT
 
 async def send_reply(reply_token: str, message: str):
     """Reply using reply token (kept for backward compatibility)."""
-    await messaging_api.reply_message(
+    api = get_messaging_api()
+    await api.reply_message(
         ReplyMessageRequest(
             reply_token=reply_token,
             messages=[TextMessage(text=message)]
@@ -178,7 +192,8 @@ async def send_reply(reply_token: str, message: str):
 
 async def send_push_message(user_id: str, message: str):
     """Send a push message to a specific user (friend)."""
-    await messaging_api.push_message(
+    api = get_messaging_api()
+    await api.push_message(
         PushMessageRequest(
             to=user_id,
             messages=[TextMessage(text=message)]
