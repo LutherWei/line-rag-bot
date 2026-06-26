@@ -25,7 +25,7 @@ async def scheduled_summarize():
             msg_result = await session.execute(msg_stmt)
             messages = msg_result.scalars().all()
             
-            if len(messages) >= 10:  # Threshold
+            if len(messages) >= 2:  # Threshold (lowered for testing; increase in production)
                 # Extract metadata
                 participants = list(set([m.user_name for m in messages]))
                 if messages:
@@ -36,14 +36,17 @@ async def scheduled_summarize():
                     date_range = datetime.utcnow().strftime("%Y-%m-%d")
 
                 # Summarize and store
-                await summarize_and_store(group_id, messages, participants, date_range)
+                success = await summarize_and_store(group_id, messages, participants, date_range)
                 
-                # Mark as processed
-                msg_ids = [m.id for m in messages]
-                update_stmt = update(RawMessage).where(RawMessage.id.in_(msg_ids)).values(is_processed=True)
-                await session.execute(update_stmt)
-                await session.commit()
-                logger.info(f"Summarized and processed {len(messages)} messages for group {group_id}")
+                if success:
+                    # Mark as processed only if summarization succeeded
+                    msg_ids = [m.id for m in messages]
+                    update_stmt = update(RawMessage).where(RawMessage.id.in_(msg_ids)).values(is_processed=True)
+                    await session.execute(update_stmt)
+                    await session.commit()
+                    logger.info(f"Summarized and processed {len(messages)} messages for group {group_id}")
+                else:
+                    logger.warning(f"Summarization failed for group {group_id}, messages NOT marked as processed")
 
 def start_scheduler():
     scheduler = AsyncIOScheduler()

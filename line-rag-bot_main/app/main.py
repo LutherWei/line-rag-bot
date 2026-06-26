@@ -13,7 +13,8 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         return Response(content=result[0], status_code=result[1])
     return Response(content="OK", status_code=200)
 
-@app.on_event("startup")
-async def startup_event():
-    from app.tasks import start_scheduler
-    start_scheduler()
+# Scheduler disabled in favor of real-time TXT architecture
+# @app.on_event("startup")
+# async def startup_event():
+#     from app.tasks import start_scheduler
+#     start_scheduler()

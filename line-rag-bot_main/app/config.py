@@ -6,6 +6,14 @@ class Settings(BaseSettings):
     line_channel_secret: str = ""
     google_api_key: str = ""
     chromadb_path: str = "./chroma_data"
+    allowed_group_ids: str = ""
+
+    @property
+    def allowed_group_id_list(self) -> list[str]:
+        """Parse comma-separated group IDs into a list."""
+        if not self.allowed_group_ids:
+            return []
+        return [gid.strip() for gid in self.allowed_group_ids.split(",") if gid.strip()]
 
     @property
     def cleaned_database_url(self) -> str:

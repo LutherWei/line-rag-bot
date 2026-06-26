@@ -1,4 +1,5 @@
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from app.config import settings
 from app.services.vector_service import store_vectors, query_vectors
 import uuid
@@ -6,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-genai.configure(api_key=settings.google_api_key)
+client = genai.Client(api_key=settings.google_api_key)
 
 SUMMARY_PROMPT = """You are an efficient team knowledge management expert. Below is a raw chat log from a LINE group.
 Please filter out all meaningless chatter, stickers, and simple agreements (e.g., haha, +1, okay). Extract ONLY the core content that holds knowledge value (e.g., resolutions, schedule changes, equipment borrowing, important announcements, rule clarifications).
@@ -41,6 +42,9 @@ Tomorrow's practice is confirmed for 3:00 PM! [Source 1] Also, a reminder that a
 📌 Source 1: 2026-06-21 Group Chat Summary (Participants: John, Alice)
 🔗 Source 2: External Link (https://example.com/rules)"""
 
+GENERATION_MODEL = 'gemini-2.5-flash'
+EMBEDDING_MODEL = 'gemini-embedding-001'
+
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
     chunks = []
     start = 0
@@ -49,32 +53,41 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str
         start += chunk_size - overlap
     return chunks
 
-async def summarize_and_store(group_id: str, messages: list, participants: list, date_range: str):
+async def summarize_and_store(group_id: str, messages: list, participants: list, date_range: str) -> bool:
     log_text = "\n".join([f"[{m.timestamp}] {m.user_name}: {m.content}" for m in messages])
     
-    model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SUMMARY_PROMPT)
     try:
-        response = model.generate_content(log_text)
+        response = client.models.generate_content(
+            model=GENERATION_MODEL,
+            contents=log_text,
+            config=types.GenerateContentConfig(
+                system_instruction=SUMMARY_PROMPT
+            )
+        )
         summary = response.text
+        if not summary:
+            logger.warning(f"Model returned empty summary for group {group_id}, skipping.")
+            return False
     except Exception as e:
         logger.error(f"Error summarizing: {e}")
-        return
+        return False
     
     chunks = chunk_text(summary)
     
     if not chunks:
-        return
+        return False
         
     try:
-        embedding_model = 'models/gemini-embedding-001'
         embeddings = []
         for chunk in chunks:
-            res = genai.embed_content(
-                model=embedding_model,
-                content=chunk,
-                task_type="retrieval_document"
+            res = client.models.embed_content(
+                model=EMBEDDING_MODEL,
+                contents=chunk,
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT"
+                )
             )
-            embeddings.append(res['embedding'])
+            embeddings.append(res.embeddings[0].values)
             
         metadatas = [
             {
@@ -88,45 +101,49 @@ async def summarize_and_store(group_id: str, messages: list, participants: list,
         ids = [str(uuid.uuid4()) for _ in chunks]
         
         store_vectors(chunks, metadatas, embeddings, ids)
+        return True
     except Exception as e:
         logger.error(f"Error embedding/storing text: {e}")
+        return False
 
-async def process_rag_query(group_id: str, query: str, reply_token: str):
-    from app.services.line_service import send_reply
+async def process_rag_query(group_id: str, query: str, user_id: str):
+    from app.services.line_service import send_push_message
+    import os
+    
     try:
-        # Using a model that is widely available in v1beta
-        embedding_model = 'models/gemini-embedding-001' # Updated to gemini-embedding-001
-        res = genai.embed_content(
-            model=embedding_model,
-            content=query,
-            task_type="retrieval_query"
-        )
-        query_embedding = res['embedding']
+        # Read the real-time TXT file
+        data_dir = "data"
+        file_path = os.path.join(data_dir, f"group_{group_id}.txt")
         
-        results = query_vectors(group_id, query_embedding)
+        chat_logs = ""
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                chat_logs += f.read()
+                
+        # Also include the historical file if it exists
+        historical_file = "[LINE]2026 台大擊劍隊暑假社遊.txt"
+        if os.path.exists(historical_file):
+            with open(historical_file, "r", encoding="utf-8") as f:
+                chat_logs += "\n\n--- 歷史對話 (社遊記事本) ---\n"
+                chat_logs += f.read()
         
-        # Check if results exist and models support (fixing 404 for text-embedding-004 if needed)
-        if not results['documents'] or not results['documents'][0]:
-            await send_reply(reply_token, "Sorry, I cannot find relevant information from the current group logs and links.")
+        if not chat_logs.strip():
+            logger.info(f"No chat logs found for group: {group_id}")
+            await send_push_message(user_id, "目前沒有任何群組對話紀錄。")
             return
 
-        contexts = []
-        source_idx = 1
-        sources_meta = []
-        for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
-            context_str = f"[Source {source_idx}]\nContent: {doc}\nDoc Type: {meta.get('doc_type')}\nSource Info: {meta.get('source_info')}"
-            contexts.append(context_str)
-            sources_meta.append(meta)
-            source_idx += 1
-            
-        context_joined = "\n\n".join(contexts)
+        # Prepare the context
+        context_str = f"[群組對話紀錄]\n{chat_logs}"
+        prompt = RAG_PROMPT.replace("{Context_with_Metadata_and_Source_Numbers}", context_str)
         
-        prompt = RAG_PROMPT.replace("{Context_with_Metadata_and_Source_Numbers}", context_joined)
+        response = client.models.generate_content(
+            model=GENERATION_MODEL,
+            contents=f"{prompt}\n\nUser Question: {query}"
+        )
         
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(f"{prompt}\n\nUser Question: {query}")
-        
-        await send_reply(reply_token, response.text)
+        await send_push_message(user_id, response.text)
     except Exception as e:
-        logger.error(f"Error in RAG query: {e}")
-        await send_reply(reply_token, "Error processing your request.")
+        logger.error(f"Error in TXT RAG query: {e}")
+        await send_push_message(user_id, "Error processing your request.")
+
+
